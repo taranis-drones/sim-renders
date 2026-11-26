@@ -1,0 +1,670 @@
+<!doctype html>
+<!-- Rerun SDK-bundled web viewer. -->
+<html>
+  <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+
+  <!-- Disable zooming: -->
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0, user-scalable=no"
+  />
+
+  <head>
+    <link rel="icon" href="favicon.ico" sizes="16x16 32x32 48x48" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@100;500&display=swap"
+      rel="stylesheet"
+    />
+    <script>
+      // Start downloading the replay now, in parallel with the viewer itself; the viewer's own request then hits the cache.
+      (function () {
+        const u = new URLSearchParams(window.location.search).get("url");
+        if (u) { const l = document.createElement("link"); l.rel = "preload"; l.as = "fetch"; l.crossOrigin = "anonymous"; l.href = u; document.head.appendChild(l); }
+      })();
+    </script>
+    <link rel="preload" href="re_viewer_bg.wasm" as="fetch" type="application/wasm" crossorigin="anonymous" />
+    <title>Sim replay</title>
+    <script>
+      // Pick the theme the viewer is about to use, so that the page doesn't change color when it takes over:
+      // the `theme` query, else the theme last chosen in the viewer, else the system's.
+      (function () {
+        const query = new URLSearchParams(window.location.search);
+        const preferences = ["dark", "light", "system"];
+
+        let preference = (query.get("theme") ?? "").toLowerCase();
+        if (!preferences.includes(preference)) {
+          preference = "system";
+          try {
+            // The viewer keeps its theme preference in the egui memory it persists.
+            const stored = /theme_preference:\s*(Dark|Light|System)/.exec(
+              localStorage.getItem("egui_memory_ron") ?? "",
+            );
+            if (stored) preference = stored[1].toLowerCase();
+          } catch (e) {
+            // No access to storage, e.g. in a sandboxed iframe.
+          }
+        }
+
+        if (preference === "system") {
+          const prefers_light = window.matchMedia(
+            "(prefers-color-scheme: light)",
+          ).matches;
+          preference = prefers_light ? "light" : "dark";
+        }
+        document.documentElement.dataset.theme = preference;
+      })();
+    </script>
+    <style>
+      html {
+        /* Remove touch delay: */
+        touch-action: manipulation;
+      }
+
+      /* `--background` matches the background of the viewer's pages in each theme. */
+      :root {
+        --background: #0d0d0d;
+        --text: #cad8de;
+        --text-strong: #ffffff;
+        --text-subdued: #7d8c92;
+      }
+
+      :root[data-theme="light"] {
+        --background: #fafafa;
+        --text: #272626;
+        --text-strong: #000000;
+        --text-subdued: #646363;
+      }
+
+      body {
+        background: var(--background);
+      }
+
+      /* Allow canvas to fill entire web page: */
+      html,
+      body {
+        overflow: hidden;
+        margin: 0 !important;
+        padding: 0 !important;
+        height: 100%;
+        width: 100%;
+      }
+
+      /* Position canvas in center-top: */
+      canvas {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+      }
+
+      /* Create a container filling the page. */
+      .container {
+        position: absolute;
+        height: 100vh;
+        width: 100vw;
+      }
+
+      /* Centered div inside the container. */
+      .centered {
+        margin-right: auto;
+        margin-left: auto;
+        display: block;
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        text-align: center;
+      }
+
+      /* Rerun styling for normal text. */
+      p {
+        color: var(--text);
+        letter-spacing: -0.15px;
+        font-family: "Inter", sans-serif;
+        font-weight: 500;
+      }
+
+      /* Rerun styling for strong text. Matches `TextStyle::Heading`. */
+      .strong {
+        color: var(--text-strong);
+        /* Match current rerun header value */
+        font-size: 16px;
+      }
+
+      /* Rerun styling for subdued text.*/
+      .subdued {
+        color: var(--text-subdued);
+        /* Larger subdued size to match current rerun font */
+        font-size: 12px;
+        letter-spacing: -0.12px;
+      }
+
+      pre {
+        color: var(--text-subdued);
+        font-size: 10px;
+        letter-spacing: -0.12px;
+      }
+
+      a .button {
+        display: inline-block;
+        background: var(--text-strong);
+        color: var(--background);
+        padding: 0.75rem 1rem;
+        border-radius: 8px;
+        text-decoration: none;
+        font-weight: 500;
+      }
+
+      #loading_screen {
+        width: 250px;
+        max-width: 80vw;
+        /* `.centered` forms a stacking context, so this is the only backdrop the logo can blend with. */
+        background: var(--background);
+        /* The backdrop must extend past the logo: its antialiased edges would otherwise blend with nothing. */
+        padding: 8px;
+      }
+
+      /* The logo is dark-on-white: invert it, and let `screen` blending drop the now-black background. */
+      #loading_logo,
+      #loading_logo_still {
+        display: block;
+        width: 100%;
+        height: auto;
+        filter: invert(1) hue-rotate(180deg);
+        mix-blend-mode: screen;
+        pointer-events: none;
+      }
+
+      /* On a light page the logo is used as is, and `multiply` blending drops its white background. */
+      :root[data-theme="light"] #loading_logo,
+      :root[data-theme="light"] #loading_logo_still {
+        filter: none;
+        mix-blend-mode: multiply;
+      }
+
+      #loading_logo_still,
+      #loading_screen.still #loading_logo {
+        display: none;
+      }
+
+      #loading_screen.still #loading_logo_still {
+        display: block;
+      }
+
+      /* Out of flow, so the logo stays centered when the status appears. */
+      #loading_status {
+        position: absolute;
+        top: 100%;
+        left: 50%;
+        transform: translateX(-50%);
+        margin: 8px 0 0;
+        white-space: nowrap;
+        font-variant-numeric: tabular-nums;
+        opacity: 0;
+      }
+
+      #loading_status.shown {
+        opacity: 1;
+        transition: opacity 0.6s ease-in;
+      }
+
+      /* Transition to hidden */
+      .hidden {
+        opacity: 0;
+        transition: opacity 0.2s ease-out;
+        visibility: hidden;
+      }
+
+      /* Transition to visible */
+      .visible {
+        opacity: 100;
+        transition: opacity 0.2s ease-in;
+        visibility: visible;
+      }
+
+      /* Alloy header bar above the viewer. */
+      #alloy_bar { position: fixed; top: 0; left: 0; right: 0; height: 48px; display: flex; align-items: center; gap: 12px;
+        padding: 0 20px; background: #0d0e12; border-bottom: 1px solid #23262e; z-index: 10; font: 500 13px Inter, system-ui, sans-serif; color: #8b919c; }
+      #alloy_bar img { height: 30px; width: auto; display: block; }
+      #the_canvas_id { top: 49px !important; height: calc(100% - 49px) !important; }
+      #loading_logo_still { filter: none !important; mix-blend-mode: normal !important; width: 160px !important; margin: 0 auto; }
+      #loading_screen { background: transparent !important; }
+    </style>
+  </head>
+
+  <body>
+    <div id="alloy_bar"><a href="https://aus.usealloy.ai" target="_blank" rel="noopener" title="Open Alloy"><img src="alloy_logo.svg" alt="Alloy"></a></div>
+    <div class="container">
+      <div class="centered hidden" id="center_text"></div>
+      <div class="centered hidden" id="loading_screen">
+        
+        <video
+          id="loading_logo"
+          width="500"
+          height="154"
+          muted
+          playsinline
+          preload="auto"
+          aria-hidden="true"
+        ></video>
+        <!-- The last frame of the animation, for when the video can't or shouldn't play. -->
+        <img
+          id="loading_logo_still"
+          width="500"
+          height="154"
+          alt=""
+          aria-hidden="true"
+          src="alloy_logo.svg"
+        />
+        <p class="subdued" id="loading_status"></p>
+      </div>
+    </div>
+    <!-- The Wasm code will resize the canvas dynamically -->
+    <canvas id="the_canvas_id" class="hidden"></canvas>
+
+    <script>
+      // The `--no-modules`-generated JS from `wasm-bindgen` attempts to use
+      // `WebAssembly.instantiateStreaming` to instantiate the wasm module,
+      // but this doesn't work with `file://` urls. This example is frequently
+      // viewed by simply opening `index.html` in a browser (with a `file://`
+      // url), so it would fail if we were to call this function!
+      //
+      // Work around this for now by deleting the function to ensure that the
+      // `no_modules.js` script doesn't have access to it. You won't need this
+      // hack when deploying over HTTP.
+      delete WebAssembly.instantiateStreaming;
+    </script>
+
+    <!-- this is the JS generated by the `wasm-bindgen` CLI tool -->
+    <script src="re_viewer.js"></script>
+
+    <script>
+      if (window.location.hostname == "app.rerun.io") {
+        const script = document.createElement("script");
+        script.src = "https://fifteen-thirtyeight.rerun.io/script.js";
+        script.dataset.site = "QKMCQFTQ";
+        script.defer = true;
+        document.body.appendChild(script);
+      }
+
+      function show_center_html(html) {
+        hide_loading_screen();
+        center_text_elem = document.getElementById("center_text");
+        center_text_elem.innerHTML = html;
+        center_text_elem.classList.remove("hidden");
+        center_text_elem.classList.add("visible");
+      }
+      function hide_center_html(html) {
+        center_text_elem = document.getElementById("center_text");
+        center_text_elem.innerHTML = html;
+        center_text_elem.classList.remove("visible");
+        center_text_elem.classList.add("hidden");
+      }
+      function show_canvas(html) {
+        canvas_elem = document.getElementById("the_canvas_id");
+        canvas_elem.classList.remove("hidden");
+        canvas_elem.classList.add("visible");
+      }
+      function hide_canvas(html) {
+        canvas_elem = document.getElementById("the_canvas_id");
+        canvas_elem.classList.remove("visible");
+        canvas_elem.classList.add("hidden");
+      }
+
+      // How long the finished logo stands alone before the loading status fades in below it.
+      const LOADING_STATUS_DELAY_MS = 1000;
+
+      const loading_screen_elem = document.getElementById("loading_screen");
+      const loading_logo_elem = document.getElementById("loading_logo");
+      const loading_status_elem = document.getElementById("loading_status");
+      let loading_status_timeout;
+
+      loading_logo_elem.addEventListener("ended", () => {
+        // Playback can end without the last frame ever reaching the screen.
+        // Paused, so that the seek doesn't restart playback of the ended clip.
+        loading_logo_elem.pause();
+        loading_logo_elem.currentTime = Math.max(
+          0,
+          loading_logo_elem.duration - 1 / 120,
+        );
+        schedule_loading_status();
+      });
+      loading_logo_elem.addEventListener("error", show_finished_logo);
+
+      function schedule_loading_status() {
+        clearTimeout(loading_status_timeout);
+        loading_status_timeout = setTimeout(
+          () => loading_status_elem.classList.add("shown"),
+          LOADING_STATUS_DELAY_MS,
+        );
+      }
+
+      // Used when the animation can't or shouldn't play.
+      function show_finished_logo() {
+        loading_screen_elem.classList.add("still");
+        schedule_loading_status();
+      }
+
+      function show_loading_screen() {
+        loading_screen_elem.classList.remove("hidden");
+        loading_screen_elem.classList.add("visible");
+
+        if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+          show_finished_logo();
+        } else {
+          loading_logo_elem.play().catch(show_finished_logo);
+        }
+      }
+
+      function hide_loading_screen() {
+        clearTimeout(loading_status_timeout);
+        loading_logo_elem.pause();
+        loading_screen_elem.classList.remove("visible");
+        loading_screen_elem.classList.add("hidden");
+      }
+
+      function set_loading_status(text) {
+        loading_status_elem.textContent = text;
+      }
+
+      // Feature-detect Wasm SIMD (`simd128`). The viewer .wasm is compiled with
+      // `-Ctarget-feature=+simd128`, so browsers without SIMD support will fail to
+      // instantiate the module with a cryptic error. We detect up-front and surface
+      // a friendly message instead.
+      //
+      // The probe is a tiny module that uses the `v128.any_true` instruction.
+      // Supported in: Chrome 91+, Firefox 89+, Safari 16.4+.
+      function has_wasm_simd() {
+        try {
+          return WebAssembly.validate(
+            new Uint8Array([
+              0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3, 2, 1, 0,
+              10, 10, 1, 8, 0, 65, 0, 253, 15, 253, 98, 11,
+            ]),
+          );
+        } catch (e) {
+          return false;
+        }
+      }
+
+      function show_unsupported_browser() {
+        show_center_html(`
+          <p class="strong">
+              Your browser is too old to run the Rerun Viewer.
+          </p>
+          <p>
+              The Viewer requires WebAssembly SIMD support, available in:
+          </p>
+          <p>
+              Chrome 91+, Firefox 89+, Safari 16.4+, or any modern Chromium-based browser.
+          </p>
+          <p>
+              Please update your browser and try again.
+          </p>
+        `);
+      }
+
+      // On mobile platforms show a warning, but provide a link to try anyways
+      if (
+        /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
+          navigator.userAgent,
+        )
+      ) {
+        show_center_html(`
+          <p>
+              Rerun is not yet supported on mobile browsers.
+          </p>
+          <p>
+              <a class="button" href="#" id="try_anyways">Try anyways</a>
+          </p>
+        `);
+        document
+          .querySelector("#try_anyways")
+          .addEventListener("click", function (event) {
+            event.preventDefault();
+            if (!has_wasm_simd()) {
+              show_unsupported_browser();
+              return;
+            }
+            load_wasm();
+          });
+      } else if (!has_wasm_simd()) {
+        show_unsupported_browser();
+      } else {
+        load_wasm();
+      }
+
+      var urlWebGl = new URL(window.location);
+      urlWebGl.searchParams.set("renderer", "webgl");
+
+      var urlWebGpu = new URL(window.location);
+      urlWebGpu.searchParams.set("renderer", "webgpu");
+
+      const forceWgpuBackendInfoParagraph = `
+        <p>
+            For graphics related issues, try forcing to render with WebGL<br>
+            <a href="${urlWebGl}">${urlWebGl}</a><br>
+            or with WebGPU<br>
+            <a href="${urlWebGpu}">${urlWebGpu}</a>
+        </p>`;
+
+      function load_wasm() {
+        // We'll defer our execution until the wasm is ready to go.
+        // Here we tell bindgen the path to the wasm file so it can start
+        // initialization and return to us a promise when it's done.
+
+        console.debug("loading wasm…");
+
+        hide_center_html("");
+        show_loading_screen();
+        set_loading_status("Loading application bundle…");
+
+        function progress({ loaded, total_bytes }) {
+          const amount =
+            total_bytes != null && total_bytes > 0
+              ? Math.round(Math.min((loaded / total_bytes) * 100, 100)) + "%"
+              : (loaded / (1024 * 1024)).toFixed(1) + "MiB";
+          set_loading_status(`Loading application bundle… ${amount}`);
+        }
+
+        async function wasm_with_progress() {
+          const response = await fetch("./re_viewer_bg.wasm");
+          // Use the uncompressed size
+          var content_length;
+          var content_multiplier = 1;
+          // If our custom size header is set, use that (see `re_web_viewer_server` crate)
+          var custom_size_header = response.headers.get("rerun-final-length");
+          // GCS custom metadata, needed since our wasm there is Brotli-compressed
+          var gcs_size_header = response.headers.get(
+            "x-goog-meta-uncompressed-size",
+          );
+          if (custom_size_header != null) {
+            content_length = custom_size_header;
+          } else if (gcs_size_header != null) {
+            content_length = gcs_size_header;
+          } else if (response.headers.get("content-encoding") == "gzip") {
+            // 3 seems to be a very good approximation
+            content_length = response.headers.get("content-length");
+            content_multiplier = 3;
+          } else {
+            content_length = response.headers.get("content-length");
+          }
+
+          const total_bytes = parseInt(content_length, 10) * content_multiplier;
+          let loaded = 0;
+
+          const res = new Response(
+            new ReadableStream({
+              async start(controller) {
+                const reader = response.body.getReader();
+                for (;;) {
+                  const { done, value } = await reader.read();
+                  if (done) break;
+                  loaded += value.byteLength;
+                  progress({ loaded, total_bytes });
+                  controller.enqueue(value);
+                }
+                set_loading_status("Starting viewer…");
+                controller.close();
+              },
+            }),
+            {
+              status: response.status,
+              statusText: response.statusText,
+            },
+          );
+
+          for (const [key, value] of response.headers.entries()) {
+            res.headers.set(key, value);
+          }
+
+          wasm_bindgen(res).then(on_wasm_loaded).catch(on_wasm_error);
+        }
+
+        wasm_with_progress();
+      }
+
+      function on_wasm_loaded() {
+        window.set_email = (value) => wasm_bindgen.set_email(value);
+
+        console.debug("Wasm loaded. Starting app…");
+
+        const query = new URLSearchParams(window.location.search);
+
+        /*
+          url: Option<StringOrStringArray>,
+          manifestUrl: Option<String>,
+          renderBackend: Option<String>,
+          videoDecoder: Option<String>,
+          hideWelcomeScreen: Option<bool>,
+          panelStateOverrides: Option<PanelStateOverrides>,
+          fullscreen: Option<FullscreenOptions>,
+          enableHistory: Option<bool>,
+          notebook: Option<bool>,
+          persist: Option<bool>,
+          theme: Option<String>,
+        */
+        const options = {
+          url: query.getAll("url"),
+          manifestUrl: query.get("manifest_url"),
+          renderBackend: query.get("renderer"),
+          videoDecoder: query.get("video_decoder"),
+          hideWelcomeScreen: true,
+          panelStateOverrides: { top: "Hidden", blueprint: "Hidden", selection: "Hidden", time: "Collapsed" },
+          // fullscreen: undefined,
+          enableHistory: true,
+          notebook: get_query_bool(query, "notebook", false),
+          persist: get_query_bool(query, "persist", true),
+          fallbackToken: query.get("token"),
+          theme: query.get("theme"),
+          login: {
+            signedInUrl: location.origin + "/signed-in",
+            signedOutUrl: location.origin + "/signed-out",
+          },
+        };
+
+        let handle = new wasm_bindgen.WebHandle(options);
+
+        function check_for_panic() {
+          if (handle.has_panicked()) {
+            console.error("Rerun has crashed");
+
+            document.getElementById("the_canvas_id").remove();
+
+            show_center_html(`
+              <p class="strong">
+                  Rerun has crashed.
+              </p>
+              <pre align="left">${handle.panic_message()}</pre>
+              <p>
+                  See the console for details.
+              </p>
+              <p>
+                  Reload the page to try again.<br>
+                  Please consider filing a <a href=https://github.com/rerun-io/rerun/issues/new/>bug report<a>. Thank you!
+              </p>
+              ${forceWgpuBackendInfoParagraph}
+            `);
+          } else {
+            let delay_ms = 1000;
+            setTimeout(check_for_panic, delay_ms);
+          }
+        }
+
+        check_for_panic();
+
+        handle
+          .start(document.getElementById("the_canvas_id"))
+          .then(() => on_app_started(handle))
+          .catch(on_wasm_error);
+      }
+
+      function get_query_bool(
+        /** @type {URLSearchParams} */ query,
+        /** @type {string} */ key,
+        /** @type {boolean} */ fallback,
+      ) {
+        const values = query.getAll(key);
+        if (values.length !== 1) {
+          console.warn(
+            `found ${values.length} values for "${key}" query. Expected one or none. Defaulting to "${fallback}".`,
+          );
+          return fallback;
+        }
+
+        // prettier-ignore
+        switch (values[0]) {
+          case "0": /* fallthrough */
+          case "false": return false;
+
+          case "": /* fallthrough */
+          case "1": /* fallthrough */
+          case "true": return true;
+
+          default:
+            console.warn(`unexpected value for "${key}" query. Expected one of: 0, 1, false, true, or no value. Defaulting to "${fallback}".`);
+            return fallback;
+        }
+      }
+
+      function on_app_started(handle) {
+        // Call `handle.destroy()` to stop. Uncomment to quick result:
+        // setTimeout(() => { handle.destroy(); handle.free()) }, 2000)
+
+        console.debug("App started.");
+        hide_loading_screen();
+        show_canvas();
+
+        if (window.location !== window.parent.location) {
+          window.parent.postMessage("READY", "*");
+        }
+
+        window._handle = handle;
+      }
+
+      function on_wasm_error(error) {
+        console.error("Failed to start: " + error);
+
+        hide_canvas();
+        show_center_html(`
+          <p>
+              An error occurred during loading:
+          </p>
+          <p style="font-family:Courier New">
+              ${error}
+          </p>
+          <p>
+              Reload the page to try again.<br>
+              Please consider filing a <a href=https://github.com/rerun-io/rerun/issues/new/>bug report<a>. Thank you!
+          </p>
+          ${forceWgpuBackendInfoParagraph}
+        `);
+      }
+    </script>
+  </body>
+</html>
+
+<!-- Powered by egui: https://github.com/emilk/egui/ -->
